@@ -1,0 +1,19 @@
+{
+    "version": 3,
+    "configurePresets": [
+        {
+            "name": "dev-common",
+            "inherits": "Default",
+            "cacheVariables": {
+                "CMAKE_TOOLCHAIN_FILE": {
+                    "type": "PATH",
+                    "value": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake"
+                },
+                "OptiX_ROOT_DIR": {
+                    "type": "FILE",
+                    "value": "PATH/TO/OptiX SDK 7.6.0/"
+                }
+            }
+        }
+    ]
+}
