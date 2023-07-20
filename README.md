@@ -2,11 +2,13 @@
 Volume renderer for sources from astronomical sourveys.
 
 # Development Setup
-Clone this repository recursive
+Requirements
   - Cuda
   - OptiX
   - vcpkg
-  - Visual Studio 2022
+  - Visual Studio 2022 / VS Code (with Cmake Tools extension)
+
+Clone this repository recursive
 
 Duplicate `CMakeUserPresets.json.example` as `CMakeUserPresets.json` and set valid values to the cacheVariables.
 
