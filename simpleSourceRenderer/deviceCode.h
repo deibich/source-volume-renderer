@@ -32,10 +32,11 @@ struct RayGenData
 
 struct MissProgData
 {
-	owl::vec4f  color0;
-	owl::vec4f  color1;
+	
 };
 
+
+// AABB with offset into buffer which contains data
 struct SourceRegion
 {
     owl::box3i sourceBox{ {0,0,0}, {0,0,0} };

@@ -46,8 +46,6 @@ __constant__ int GRID = 8;
 
 namespace
 {
-   
-
 	template <typename T>
 	__device__ T smoothstep(T h0, T h1, T x)
 	{
@@ -113,14 +111,19 @@ namespace
             v.z - floorf(v.z),
         };
     }
-}
 
-OPTIX_BOUNDS_PROGRAM(VolumeGrid)(const void* geomData, box3f& primBounds, const int primID)
-{
-    const VolumeGridData& self = *(const VolumeGridData*)geomData;
-    vec3f lower = { 0,0,0 };
-    primBounds = { vec3f{self.sourceRegions[primID].sourceBox.lower } / vec3f{self.gridDims}, vec3f{self.sourceRegions[primID].sourceBox.upper + vec3i{1,1,1}}/ vec3f{self.gridDims} };
-    
+    __device__ vec3f mix(vec3f x, vec3f y, float s)
+    {
+        return x + s*(y - x);
+    }
+
+    __device__ float aabb_outline(vec3f pos, box3i box)
+    {
+        vec3f bcen = 0.5f * (vec3f{ box.lower } + vec3f{ box.upper });
+        vec3f brad = 0.5f * (vec3f{ box.upper } - vec3f{ box.lower });
+        vec3f e = smoothstep(brad - 1.f, brad - 0.01f, abs(pos - bcen));
+        return 1.0f - (1.0f - e.x * e.y) * (1.0f - e.y * e.z) * (1.0f - e.z * e.x);
+    }
 }
 
 OPTIX_RAYGEN_PROGRAM(simpleRayGen)()
@@ -131,7 +134,6 @@ OPTIX_RAYGEN_PROGRAM(simpleRayGen)()
     const vec2f screen = (vec2f(pixelID) + vec2f(.5f)) / vec2f(self.fbSize);
 
     owl::Ray ray;
-
     ray.origin
         = self.camera.pos;
     ray.direction
@@ -139,18 +141,25 @@ OPTIX_RAYGEN_PROGRAM(simpleRayGen)()
             + screen.u * self.camera.dir_du
             + screen.v * self.camera.dir_dv);
     PerRayData prd;
-
     prd.invDir = 1.0f / ray.direction;
     prd.hitCount = 0;
     prd.maxVal = -1.f;
+
     owl::traceRay(/*accel to trace against*/self.world,
         /*the ray to trace*/ray,
         /*prd*/prd);
-    const int fbOfs = pixelID.x + self.fbSize.x * pixelID.y;
-    
-    self.fbPtr[fbOfs] = owl::make_rgba(prd.color);
-    
+
+    // Ray traversal finished
+    const int framebufferOffset = pixelID.x + self.fbSize.x * pixelID.y;
+    self.fbPtr[framebufferOffset] = owl::make_rgba(prd.color);
 }   
+
+OPTIX_BOUNDS_PROGRAM(VolumeGrid)(const void* geomData, box3f& primBounds, const int primID)
+{
+    const VolumeGridData& self = *(const VolumeGridData*)geomData;
+    vec3f lower = { 0,0,0 };
+    primBounds = { vec3f{self.sourceRegions[primID].sourceBox.lower } / vec3f{self.gridDims}, vec3f{self.sourceRegions[primID].sourceBox.upper + vec3i{1,1,1}} / vec3f{self.gridDims} };
+}
 
 OPTIX_INTERSECT_PROGRAM(VolumeGrid)()
 {
@@ -159,8 +168,6 @@ OPTIX_INTERSECT_PROGRAM(VolumeGrid)()
 
     vec3f boxMin = vec3f{ self.sourceRegions[primID].sourceBox.lower } / vec3f(self.gridDims);
     vec3f boxMax = vec3f{ self.sourceRegions[primID].sourceBox.upper + vec3i{1,1,1} } / vec3f(self.gridDims);
-    // vec3f boxMin = { 0,0,0 };
-    // vec3f boxMax = { 1,1,1 };
 
     PerRayData& prd = owl::getPRD<PerRayData>();
     vec3f rayOrig = optixGetWorldRayOrigin();
@@ -184,22 +191,9 @@ OPTIX_INTERSECT_PROGRAM(VolumeGrid)()
     }
 }
 
-__device__ vec3f mix(vec3f x, vec3f y, float s)
-{
-    return x + s*(y - x);
-}
-
-__device__ float aabb_outline(vec3f pos, box3i box)
-{
-    vec3f bcen = 0.5f * (vec3f{ box.lower } + vec3f{ box.upper });
-    vec3f brad = 0.5f * (vec3f{ box.upper } - vec3f{ box.lower });
-    vec3f e = smoothstep(brad - 1.f, brad - 0.01f, abs(pos - bcen));
-    return 1.0f - (1.0f - e.x * e.y) * (1.0f - e.y * e.z) * (1.0f - e.z * e.x);
-}
 
 OPTIX_ANY_HIT_PROGRAM(VolumeGrid)()
 {
-
     const VolumeGridData& self = owl::getProgramData<VolumeGridData>();
     PerRayData& prd = owl::getPRD<PerRayData>();
 
@@ -207,7 +201,6 @@ OPTIX_ANY_HIT_PROGRAM(VolumeGrid)()
     float tNear = __int_as_float(optixGetAttribute_0());
     auto primId = optixGetPrimitiveIndex();
     tNear = max(0.0f, min(tNear, tFar));
-
 
     vec3f rayDirection = optixGetWorldRayDirection();
     vec3f rayOrigin = optixGetWorldRayOrigin();
@@ -256,7 +249,7 @@ OPTIX_ANY_HIT_PROGRAM(VolumeGrid)()
     float currVal = 0;
     auto bufferOffset = self.sourceRegions[primId].bufferOffset;
 
-    // The incremental phase ("branchless" optiized) from: https://www.shadertoy.com/view/4dX3zl
+    // The incremental phase ("branchless" optimized) from: https://www.shadertoy.com/view/4dX3zl
     vec3i mask;
     for (int i = 0; i < itCount; i++) {
         if (oaabb.contains(localGridPosI))
@@ -297,16 +290,12 @@ OPTIX_CLOSEST_HIT_PROGRAM(VolumeGrid)()
 
 OPTIX_MISS_PROGRAM(miss)()
 {
-  const vec2i pixelID = owl::getLaunchIndex();
-  const MissProgData &self = owl::getProgramData<MissProgData>();
-  
-  PerRayData &prd = owl::getPRD<PerRayData>();
-  int pattern = (pixelID.x / 8) ^ (pixelID.y/8);
-	if(prd.hitCount > EPS)
-	{
-	}
-    else
+    const vec2i pixelID = owl::getLaunchIndex();
+    PerRayData &prd = owl::getPRD<PerRayData>();
+    //const MissProgData &self = owl::getProgramData<MissProgData>();
+
+    if(prd.hitCount < EPS)
     {
-        prd.color = (pattern & 1) ? self.color1 : self.color0;
+        prd.color = vec4f(.0f);
     }
 }

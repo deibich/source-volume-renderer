@@ -31,6 +31,9 @@
 *.out
 *.app
 
+.vs/**
+
 out/**
 .vscode/settings.json
+.vscode/launch.json
 CMakeUserPresets.json
