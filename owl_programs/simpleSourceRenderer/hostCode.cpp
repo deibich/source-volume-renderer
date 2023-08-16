@@ -418,7 +418,9 @@ void Viewer::render()
     static double avg_t = t_now - t_last;
     
     avg_t = 0.8 * avg_t + 0.2 * (t_now - t_last);
-
+    char title[1000];
+    sprintf(title, "%.2f FPS", 1.f / avg_t);
+    inherited::setTitle(title);
     t_last = t_now;
 }
 

@@ -1,0 +1,3 @@
+add_subdirectory(simpleSourceRenderer)
+add_subdirectory(surfaceTest)
+add_subdirectory(cubeTest)

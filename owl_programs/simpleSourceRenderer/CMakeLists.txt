@@ -7,14 +7,11 @@ embed_ptx(
     deviceCode.cu
 )
 
-find_package(tinyxml2 CONFIG REQUIRED)
-find_package(unofficial-cfitsio CONFIG REQUIRED)
 
 add_executable(SimpleSourceRenderer
 	"hostCode.cpp"
   "deviceCode.h"
 )
-
 target_link_libraries(SimpleSourceRenderer
   PRIVATE
     simpleSourceRenderer-ptx

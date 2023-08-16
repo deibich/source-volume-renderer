@@ -270,7 +270,7 @@ OPTIX_ANY_HIT_PROGRAM(VolumeGrid)()
 
     vec3f mainColor = spectral_jet(prd.maxVal / self.minmax.y);
     vec3f bgColor = { .8f, .8f, .8f };
-    bgColor = { .0f, .0f, .0f };
+    // bgColor = { .0f, .0f, .0f };
     vec3f borderColor = { 0,0,0 };
     float borderAlpha = aabb_outline(localGridPosEntryF, oaabb);
 
@@ -296,6 +296,6 @@ OPTIX_MISS_PROGRAM(miss)()
 
     if(prd.hitCount < EPS)
     {
-        prd.color = vec4f(.0f);
+        prd.color = vec4f( .8f, .8f, .8f, 1.f);
     }
 }
