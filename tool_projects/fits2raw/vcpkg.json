@@ -1,0 +1,11 @@
+{
+    "dependencies": [
+        "args",
+        "glfw3",
+        "tinyxml2",
+        "cfitsio",
+        "glew",
+        "glm"
+    ]
+}
+  
