@@ -32,6 +32,16 @@
 
 #include <map>
 
+#include <nanovdb/NanoVDB.h>
+#include <nanovdb/util/GridBuilder.h>
+#include <nanovdb/util/Primitives.h>
+#include <nanovdb/util/CudaDeviceBuffer.h>
+#include <nanovdb/util/OpenToNanoVDB.h> 
+
+#include "NanoViewer.h"
+
+#include <imgui.h>
+
 #define LOG(message)                                            \
   std::cout << OWL_TERMINAL_BLUE;                               \
   std::cout << "#owl.sample(main): " << message << std::endl;   \
@@ -105,7 +115,7 @@ struct SourceRegionLocation {
   }
 };
 
-struct Viewer : public owl::viewer::OWLViewer
+struct Viewer : public NanoViewer
 {
   Viewer();
 
@@ -121,6 +131,10 @@ struct Viewer : public owl::viewer::OWLViewer
     updates the camera. gets called AFTER all values have been updated */
   void cameraChanged() override;
 
+  void gui() override;
+
+  CUstream getCudaStream();
+
   bool sbtDirty = true;
   OWLRayGen rayGen   { 0 };
   OWLContext context { 0 };
@@ -130,13 +144,30 @@ struct Viewer : public owl::viewer::OWLViewer
   double t0 = getCurrentTime();
 };
 
+void Viewer::gui()
+{
+	ImGui::Begin("Control");
+
+	ImGui::LabelText("t0", "%f", t0);
+	
+	
+	if(ImGui::Button("Rebuild AS"))
+	{
+		
+	}
+	
+	ImGui::End();
+
+	
+}
+
 /*! window notifies us that we got resized */
 void Viewer::resize(const vec2i &newSize)
 {
   OWLViewer::resize(newSize);
-  owlRayGenSet1ul   (rayGen,"fbPtr",        (uint64_t)fbPointer);
+  /* owlRayGenSet1ul   (rayGen,"fbPtr",        (uint64_t)fbPointer);
   owlRayGenSet2i    (rayGen,"fbSize",       (const owl2i&)fbSize);
-  sbtDirty = true;
+  sbtDirty = true; */
   cameraChanged();
 
   
@@ -168,140 +199,19 @@ void Viewer::cameraChanged()
   owlParamsSetRaw(lp, "camera", &cam);
 }
 
-size_t extractSourceRegionsFromCatalogueXML(const std::string &filePath, std::vector<SourceRegion> &sourceBoxes)
-{
-    size_t voxels = 0;
-    tinyxml2::XMLDocument doc;
-    doc.LoadFile(filePath.c_str());
-
-    /*
-      <VOTABLE>
-        <RESOURCE>
-          ...
-          ...
-          <TABLE>
-            <FIELD name="fieldname1" datatype="datatype" .... />
-            <FIELD name="fieldname2" datatype="datatype" .... />
-            ...
-            <FIELD name="fieldnameX" datatype="datatype" .... />
-            <DATA>
-              <TABLEDATA>
-                <TR>
-                  <TD> value for fieldname1 </TD>
-                  <TD> value for fieldname2 </TD>
-                  ...
-                  <TD> value for fieldnameX </TD>
-                </TR>
-                <TR>
-                  ...
-                </TR>
-                  ...
-                <TR>
-                </TR>
-              </TABLEDATA>
-            </DATA>
-
-          </TABLE>
-        </RESOURCE>
-      </VOTABLE>
-    */
-    auto tableElement = doc.FirstChildElement("VOTABLE")->FirstChildElement("RESOURCE")->FirstChildElement("TABLE");
-    auto tableChildNameEntrys = tableElement->FirstChild();
-   
-    auto dataEntry = tableElement->LastChildElement("DATA")->FirstChildElement("TABLEDATA")->FirstChild();
-    
-    for (; dataEntry != nullptr; dataEntry = dataEntry->NextSibling())
-    {
-      SourceRegionLocation srl{};
-      auto tdEntry = dataEntry->FirstChild();
-      for (auto currTableChildNameEntry = tableChildNameEntrys; currTableChildNameEntry != nullptr; currTableChildNameEntry = currTableChildNameEntry->NextSibling())
-      {
-          auto tableChildElement = currTableChildNameEntry->ToElement();
-          
-          if (tableChildElement == nullptr || !tableChildElement->NoChildren())
-          {
-              break;
-          }
-          std::string attributeName = tableChildElement->Attribute("name");
-          if(!attributeName.empty() &&  srl.boxMinMax.contains(attributeName))
-          {
-            auto entryValue = tdEntry->ToElement()->IntText();
-            srl.boxMinMax[attributeName] = entryValue;
-          }
-          tdEntry = tdEntry->NextSibling();
-      }
-        SourceRegion sr;
-        sr.gridSourceBox = srl.toBox3i();
-        sr.bufferOffset = voxels;
-        voxels += sr.gridSourceBox.volume();
-        sr.sourceBoxNormalized = srl.toBox3f();
-        sourceBoxes.push_back(sr);
-    }
-
-    return voxels;
-}
-
-vec3i loadDataForSources(const std::string &filePath, std::vector<SourceRegion> &sourceBoxes, std::vector<float> &dataBuffer)
-{
-  long firstPx[3];
-  long lastPx[3];
-  long inc[3] = {1,1,1};
-  size_t nextDataIdx = 0;
-  
-  fitsfile *fitsFile;
-  int fitsError;
-  ffopen(&fitsFile, filePath.c_str(), READONLY, &fitsError);
-  assert(fitsError == 0);
-
-  int axisCount;
-  int imgType;
-  long axis[3];
-  fits_get_img_param(fitsFile, 3, &imgType, &axisCount, &axis[0], &fitsError);
-  assert(fitsError == 0);
-	assert(axisCount == 3);
-  assert(imgType == FLOAT_IMG);
-
-  
-	const box3i dataCubeVolume({ 0,0,0 }, { axis[0]-1, axis[1]-1, axis[2]-1});
-  
-  float nan = NAN;
-
-  for (auto & sourceBox : sourceBoxes)
-  {
-    sourceBox.bufferOffset = nextDataIdx;
-    firstPx[0] = sourceBox.gridSourceBox.lower.x + 1;
-    firstPx[1] = sourceBox.gridSourceBox.lower.y + 1;
-    firstPx[2] = sourceBox.gridSourceBox.lower.z + 1;
-
-    lastPx[0] = sourceBox.gridSourceBox.upper.x;
-    lastPx[1] = sourceBox.gridSourceBox.upper.y;
-    lastPx[2] = sourceBox.gridSourceBox.upper.z;
-
-    fits_read_subset(fitsFile, TFLOAT, firstPx, lastPx, inc, &nan, dataBuffer.data() + nextDataIdx, 0, &fitsError);
-    assert(fitsError == 0);
-    nextDataIdx += sourceBox.gridSourceBox.volume();
-  }
-    
-  ffclos(fitsFile, &fitsError);
-  return {axis[0], axis[1], axis[2]};
-}
 
 
 
 Viewer::Viewer()
 {
+	context = owlContextCreate(nullptr,1);
+	OWLModule module = owlModuleCreate(context,deviceCode_ptx);
+	auto handle = nanovdb::createLevelSetSphere<float, float, nanovdb::CudaDeviceBuffer>(100.0f);
+	auto stream = getCudaStream();
+	handle.deviceUpload(stream, true);
+	auto h = handle.deviceGrid<float>();
 
-  // load data
-  std::vector<SourceRegion> sourceRegions;
-  std::vector<float> dataBuffer;
-  
-  const auto voxelCount = extractSourceRegionsFromCatalogueXML(cmdlineInput.catalogueFilePath, sourceRegions);
-  dataBuffer.resize(voxelCount);
-  vec3i volumeSize = loadDataForSources(cmdlineInput.volumeFilePath, sourceRegions, dataBuffer);
 
-  // create a context on the first device:
-  context = owlContextCreate(nullptr,1);
-  OWLModule module = owlModuleCreate(context,deviceCode_ptx);
 
   // ##################################################################
   // set up all the *GEOMETRY* graph we want to render
@@ -411,133 +321,109 @@ Viewer::Viewer()
   };
 
 
-  // Create AABB 
-    
-  OWLVarDecl aabbGeomsVar[] = {
-    {"gridData", OWL_BUFPTR, OWL_OFFSETOF(DatacubeSources, gridData)},
-    {"sourceRegions", OWL_BUFPTR, OWL_OFFSETOF(DatacubeSources, sourceRegions)},
-    {"sourceCount", OWL_INT, OWL_OFFSETOF(DatacubeSources, sourceCount)},
-    {"gridDims", OWL_INT3, OWL_OFFSETOF(DatacubeSources, gridDims)},
-    {"minmax", OWL_FLOAT2, OWL_OFFSETOF(DatacubeSources, minmax)},
-    { /* sentinel to mark end of list */ }
-  };
-
-  OWLGeomType aabbGeomType = owlGeomTypeCreate(context, OWL_GEOM_USER, sizeof(DatacubeSources), aabbGeomsVar, -1);
-
-  // Programs for user geom must be set explicit
-  owlGeomTypeSetBoundsProg(aabbGeomType, module, "AABBGeom");
-  owlGeomTypeSetIntersectProg(aabbGeomType, 0, module, "AABBGeom");
-  owlGeomTypeSetClosestHit(aabbGeomType, 0, module, "AABBGeom");
-  //owlGeomTypeSetAnyHit(aabbGeomType, 0, module, "AABBGeom");
-  owlBuildPrograms(context);
-
-
-  for(auto &region : sourceRegions)
-  {
-    auto lower = region.sourceBoxNormalized.lower / vec3f(volumeSize);
-    auto upper = region.sourceBoxNormalized.upper / vec3f(volumeSize);
-    // lower -= vec3f{0.5f};
-    //upper -= vec3f{0.5f};
-    region.sourceBoxNormalized = {lower, upper};
-  }
-
-  OWLBuffer owlSourcesDataBuffer = owlDeviceBufferCreate(context, OWL_USER_TYPE(SourceRegion), sourceRegions.size(), sourceRegions.data());
-  const OWLBuffer owlDataBuffer = owlDeviceBufferCreate(context, OWL_FLOAT, dataBuffer.size(), dataBuffer.data());
-  const owl2f gridDataMinMax = 
-  {
-    *std::min_element(dataBuffer.begin(), dataBuffer.end()),
-    *std::max_element(dataBuffer.begin(), dataBuffer.end())
-  };
-
-  OWLGeom aabbGeom = owlGeomCreate(context, aabbGeomType);
-
-  owlGeomSetBuffer(aabbGeom, "gridData", owlDataBuffer);
-  owlGeomSetBuffer(aabbGeom, "sourceRegions", owlSourcesDataBuffer);
-  owlGeomSet1i(aabbGeom, "sourceCount", sourceRegions.size());
-  owlGeomSet3i(aabbGeom, "gridDims", {volumeSize.x, volumeSize.y, volumeSize.z});
-  owlGeomSet2f(aabbGeom, "minmax", gridDataMinMax);
-
-
-  owlGeomSetPrimCount(aabbGeom, sourceRegions.size());
-
-  OWLGroup aabbGroups[1];
-  aabbGroups[0] = owlUserGeomGroupCreate(context, 1, &aabbGeom);
-  owlGroupBuildAccel(aabbGroups[0]);
+  	// Create AABB 
+  	OWLVarDecl aabbGeomsVar[] = {
+		{"gridData", OWL_BUFPTR, OWL_OFFSETOF(DatacubeSources, gridData)},
+		{"sourceRegions", OWL_BUFPTR, OWL_OFFSETOF(DatacubeSources, sourceRegions)},
+		{"sourceCount", OWL_INT, OWL_OFFSETOF(DatacubeSources, sourceCount)},
+		{"gridDims", OWL_INT3, OWL_OFFSETOF(DatacubeSources, gridDims)},
+		{"minmax", OWL_FLOAT2, OWL_OFFSETOF(DatacubeSources, minmax)},
+		{ /* sentinel to mark end of list */ }
+	};
   
-  _aabbWorld = owlInstanceGroupCreate(context, 1, &aabbGroups[0], nullptr, nullptr, OWL_MATRIX_FORMAT_OWL, OPTIX_BUILD_FLAG_ALLOW_UPDATE);
-  
+	OWLGeomType aabbGeomType = owlGeomTypeCreate(context, OWL_GEOM_USER, sizeof(DatacubeSources), aabbGeomsVar, -1);
+	OWLVarDecl nanoGridVar = {"nanoGrid", OWL_BUFPTR, 0};
+	OWLGeomType nanoGridType = owlGeomTypeCreate(context, OWL_GEOM_USER, sizeof(nanovdb::NanoGrid<float>), &nanoGridVar, 1);
+	return;
+	// Programs for user geom must be set explicit
+	//owlGeomTypeSetBoundsProg(aabbGeomType, module, "AABBGeom");
+	//owlGeomTypeSetIntersectProg(aabbGeomType, 0, module, "AABBGeom");
+  	//owlGeomTypeSetClosestHit(aabbGeomType, 0, module, "AABBGeom");
+	//owlGeomTypeSetAnyHit(aabbGeomType, 0, module, "AABBGeom");
+	owlGeomTypeSetIntersectProg(nanoGridType, 0, module, "NanoIntersect");
+	owlBuildPrograms(context);
+  	
+	OWLGeom grid = owlGeomCreate(context, nanoGridType);
+	owlGeomSetPrimCount(grid, 1);
 
-  owlGroupBuildAccel(_aabbWorld);
-  world = _aabbWorld;
 
-  //world = triangleWorld;
-  // ----------- create object  ----------------------------
-  rayGen
-    = owlRayGenCreate(context,module,"simpleRayGen",
-                      sizeof(RayGenData),
-                      rayGenVars,-1);
-  /* camera and frame buffer get set in resiez() and cameraChanged() */
-  owlRayGenSetGroup (rayGen,"world",        world);
+	auto gridBuffer = owlDeviceBufferCreate(context, OWL_BYTE, handle.size(), handle.data());
+	owlGeomSetBuffer(grid, "nanoGrid", gridBuffer);
+	// OWLGroup aabbGroups[1];
+	// aabbGroups[0] = owlUserGeomGroupCreate(context, 1, &aabbGeom);
+	// owlGroupBuildAccel(aabbGroups[0]);
 
-  // ##################################################################
-  // build *SBT* required to trace the groups
-  // ##################################################################
+	OWLGroup aabbGroups[1];
+	aabbGroups[0] = owlUserGeomGroupCreate(context, 1, &grid);
 
-  owlBuildPrograms(context);
-  owlBuildPipeline(context);
-  owlBuildSBT(context);
+	owlGroupBuildAccel(aabbGroups[0]);
+	
+	_aabbWorld = owlInstanceGroupCreate(context, 1, &aabbGroups[0], nullptr, nullptr, OWL_MATRIX_FORMAT_OWL, OPTIX_BUILD_FLAG_ALLOW_UPDATE);
+	owlGroupBuildAccel(_aabbWorld);
+	world = _aabbWorld;
+
+	//world = triangleWorld;
+	// ----------- create object  ----------------------------
+	rayGen = owlRayGenCreate(context, module, "simpleRayGen",
+							sizeof(RayGenData),
+							rayGenVars, -1);
+	/* camera and frame buffer get set in resiez() and cameraChanged() */
+	owlRayGenSetGroup (rayGen, "world", world);
+
+	// ##################################################################
+	// build *SBT* required to trace the groups
+	// ##################################################################
+	owlBuildPrograms(context);
+	owlBuildPipeline(context);
+	owlBuildSBT(context);
 }
+
 
 
 void Viewer::render()
 {
-
+/*
   auto deltaTime = getCurrentTime() - t0;
 
   if (sbtDirty) {
     owlBuildSBT(context);
     sbtDirty = false;
   }
-  owlLaunch2D(rayGen,fbSize.x,fbSize.y,lp);
-  cudaDeviceSynchronize();
+  owlAsyncLaunch2D(rayGen,fbSize.x,fbSize.y,lp);
+  //cudaDeviceSynchronize();
+
+  //assume device id 0, since we have only one device acquired
+  const auto deviceId = 0;
+  auto stream = owlContextGetStream(context, deviceId);
+  cudaStreamSynchronize(stream);
+  */
+}
+
+CUstream Viewer::getCudaStream()
+{
+	//assume device id 0, since we have only one device acquired
+	const auto deviceId = 0;
+	auto stream = owlContextGetStream(context, deviceId);
+	return stream;
 }
 
 
 int main(int argc, char **argv)
 {
-  LOG("owl::ng example '" << argv[0] << "' starting up");
+	auto handle = nanovdb::createLevelSetSphere<float, float, nanovdb::CudaDeviceBuffer>(100.0f);
 
-  for (int i=1;i<argc;i++) {
-        const std::string arg = argv[i];
-        if (arg == "-vol")
-        {
-            cmdlineInput.volumeFilePath = argv[++i];
-        }
-        else if (arg == "-cat")
-        {
-            cmdlineInput.catalogueFilePath = argv[++i];
-        } 
-        else
-        {
-            std::cout << "unknown cmdline arg '" << arg << "'" << std::endl;
-        }
-    }
-    
-    assert(!cmdlineInput.volumeFilePath.empty(), "No Volume file given");
-    assert(!cmdlineInput.catalogueFilePath.empty(), "No catalogue file given");
-    
+	Viewer viewer;
+	auto stream = viewer.getCudaStream();
+	handle.buffer().deviceUpload(stream, true);
 
-
-  Viewer viewer;
-  viewer.camera.setOrientation(init_lookFrom,
-                               init_lookAt,
-                               init_lookUp,
-                               owl::viewer::toDegrees(acosf(init_cosFovy)));
-  viewer.enableFlyMode();
-  // viewer.enableInspectMode(owl::box3f(vec3f(-1.f),vec3f(+1.f)));
-
-  // ##################################################################
-  // now that everything is ready: launch it ....
-  // ##################################################################
-  viewer.showAndRun();
+	auto* deviceGrid = handle.deviceGrid<float>();
+	
+	viewer.camera.setOrientation(init_lookFrom,
+                            	init_lookAt,
+                            	init_lookUp,
+                            	owl::viewer::toDegrees(acosf(init_cosFovy)));
+	
+	viewer.enableFlyMode();
+	viewer.enableInspectMode(owl::box3f(vec3f(-1.f),vec3f(+1.f)));
+	viewer.showAndRunWithGui();
 }

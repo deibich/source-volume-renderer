@@ -175,6 +175,8 @@ namespace {
         fits_get_img_param(fitsFile, 3, &imgType, &axisCount, &axis[0], &fitsError);
         assert(fitsError == 0);
         assert(axisCount == 3);
+
+        //TODO: this assert do not pass
         assert(imgType == FLOAT_IMG);
 
         const box3i gridBox({ 0,0,0 }, { axis[0], axis[1], axis[2]});
