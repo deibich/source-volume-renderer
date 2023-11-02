@@ -5,6 +5,23 @@
     "tinyxml2",
     "cfitsio",
     "glew",
-    "glm"
+    "glm",
+    {
+      "name": "openvdb",
+      "default-features": false,
+      "features": [
+        "nanovdb",
+        "tools"
+      ]
+    },
+    {
+      "name": "imgui",
+      "default-features": false,
+      "features":[
+        "opengl3-binding",
+        "glfw-binding"
+      ]
+    },
+    "tbb"
   ]
 }
