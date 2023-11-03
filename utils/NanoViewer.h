@@ -1,8 +1,7 @@
 #pragma once
 
-#include <owl/owl.h>
-#include <owlViewer/OWLViewer.h>
-
+#include "owl/owl.h"
+#include "owlViewer/OWLViewer.h"
 struct NanoViewer : public owl::viewer::OWLViewer
 {
     virtual void gui();
